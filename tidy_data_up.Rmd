@@ -1,0 +1,236 @@
+---
+title: "Tidy data up"
+author: "Luis Fernando Delgado"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_download: true
+    theme: paper
+    df_print: tibble
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+fig.dim = c(7, 4)
+library(ggrepel)
+```
+
+# Load data
+```{r}
+# Sourcing External R Script
+source("https://raw.githubusercontent.com/Cassava2050/PPD/main/utilities_tidy.R")
+
+# Setting Up File Paths and Parameters
+folder <- here::here("data//")  
+file <- "phenotype.csv"
+skip_col <- 3 
+trial_interest <- "MDEPR"
+year_interest <- 2022
+
+# Loading Data
+# The function 'read_cassavabase' should be defined in the sourced script
+sel_data <- read_cassavabase(phenotypeFile = paste0(folder, file))
+```
+
+# Standardizing Column Names
+The function 'change_colname' should also be defined in the sourced script
+
+```{r}
+sel_data_kp <- change_colname(sel_data, NA)
+```
+# Changing Column type
+
+```{r}
+obs_col <- c(
+  names(sel_data_kp)[str_detect(names(sel_data_kp), "obs_")],
+  "use_rep_number", "blockNumber",
+  "use_plot_number", "use_plot_width",
+  "use_plot_length"
+)
+```
+
+# mutate all traits into numeric
+
+```{r}
+sel_data_kp <- sel_data_kp %>% 
+  mutate(across(all_of(obs_col), as.numeric))
+
+
+# remove - , replace by _
+names(sel_data_kp) = gsub("-", "_", names(sel_data_kp))
+
+# remove trials: 202301, 202304, 202307. These were analyzed 
+sel_data_kp <- 
+  sel_data_kp %>% filter(!str_detect(use_trial_name, "202301|202304|202307"))
+
+
+# Duplications in row and cols
+duplicated_plot <- row_col_dup(sel_data_kp)
+```
+# Plot trial layout
+```{r}
+trial_layout(sel_data_kp)
+```
+
+# Check the clone name
+
+```{r}
+cloneName_new_old <- check_clone_name(
+  clone_list = sel_data_kp$use_accession_name,
+  new_names = NA,
+  add_check = NULL
+)
+
+trial_standard <- sel_data_kp %>%
+  left_join(cloneName_new_old,
+            by = c("use_accession_name" = "accession_name_ori")
+  ) %>%
+  select(-use_accession_name) %>%
+  rename(use_accession_name = use_accession_name.y)
+```
+# Add GIS data
+
+```{r}
+trial_standard <- add_GIS(trial_standard)
+
+# Get world map data for reference
+vietnam_map <- map_data("world", region = "Vietnam")
+
+# Create a data frame with your locations
+locations <- data.frame(
+  Location = c("Tay Ninh", "Dong Nai"),
+  Latitude = c(11.3009, 11.1432),
+  Longitude = c(106.1107, 107.2742)
+)
+
+# Create a ggplot object for the map
+static_map <- ggplot() +
+  geom_polygon(data = vietnam_map, aes(x = long, y = lat, group = group), 
+               fill = "lightgray", col = "black", linewidth = 0.03) +
+  geom_point(data = locations, aes(x = Longitude, y = Latitude), size = 2, color = "red") +
+  geom_text_repel(data = locations, aes(x = Longitude, y = Latitude, label = Location), 
+                  size = 3) +
+  geom_text(aes(x = 108.5, y = 10, label = "Author: Luis Fdo. Delgado"), size = 1.5) +
+  labs(x =  "Latitude", y = "Longitude") +
+  labs(title = "Locations in Vietnam", subtitle = "Tay Ninh and Dong Nai") +
+  theme(plot.title = element_text(face = "bold.italic"),
+        plot.subtitle = element_text(face = "italic")) +
+  coord_fixed(1.3) # This sets the aspect ratio
+
+# Display the map
+print(static_map)
+
+ggsave(paste("images\\map", trial_interest, ".png", sep = "_"),
+       plot = static_map, units = "in", dpi = 300, width = 6, height = 5
+)
+
+```
+# Extracting checks
+
+```{r max.print=1}
+accession_rep_ct <- trial_standard %>%
+  count(use_trial_name, use_accession_name, use_rep_number)  %>%
+  arrange(use_trial_name) %>%
+  filter(n>1)
+print(accession_rep_ct) 
+```
+
+# Harvesting time
+
+```{r max.print=1}
+conducted_trials <- 
+  trial_standard %>% group_by(use_trial_name, use_plant_date,use_harvest_date, use_location) %>% 
+  summarise(n_gen = n_distinct(use_accession_name)) %>% 
+  mutate(harvesting_time = 
+           interval(ymd(use_plant_date), ymd(use_harvest_date)) %>% as.period,
+         harvesting_time = paste0(harvesting_time@month, "month ", harvesting_time@day, "day")) %>% 
+  ungroup()
+
+print(conducted_trials %>% rmarkdown::paged_table())
+```
+# plot plant number
+
+```{r max.print=1}
+plants_plot <- trial_standard %>%
+  group_by(use_trial_name) %>%
+  count(obs_planted_number_plot) 
+print(plants_plot)
+```
+
+# Frequency harvest plant number
+
+```{r}
+plants_harvested <- trial_standard %>%
+  group_by(use_trial_name) %>%
+  count(obs_harvest_number) %>% arrange(desc(obs_harvest_number))
+
+# planted and harvested
+plants_plot %>% select(-n) %>% 
+  left_join(plants_harvested %>% 
+              summarise(harvested_plants = max(obs_harvest_number)), by = "use_trial_name") %>% 
+  write.table("clipboard", sep="\t", col.names = T, row.names = F)
+```
+
+# Double check yield calculation
+
+```{r fig.height=6, fig.width=8}
+plants_to_harvest <- plants_harvested %>% 
+  ggplot(aes(x = factor(obs_harvest_number), 
+             y = n, fill = factor(obs_harvest_number))) +
+  geom_col(col = 'black') +
+  #scale_fill_jco() +
+  #theme_xiaofei() +
+  theme(axis.text.x = element_text(vjust = 1, angle = 65),
+        text = element_text(size = 20),
+        legend.position="top")+
+  labs(x = "Harvest_plant_number", y = "Freq", fill = "Harvest_plant_number") +
+  facet_wrap(~ use_trial_name)
+
+print(plants_to_harvest)
+
+ggsave(paste("images\\bar", trial_interest, ".png", sep = "_"),
+       plot = plants_to_harvest, units = "in", dpi = 300, width = 9, height = 6)
+```
+
+# Compute germination, yield, yield_starch
+
+```{r}
+trial_standard <- trial_standard %>%
+  mutate(obs_harvest_number_plan =
+           case_when(str_detect(use_trial_name, "2023111")  ~ 4,
+                     str_detect(use_trial_name, "2023112")  ~ 4,
+                     str_detect(use_trial_name, "2023113")  ~ 10,
+                     str_detect(use_trial_name, "2023114")  ~ 10),
+         obs_germination_perc = obs_germinated_number_plot/obs_planted_number_plot * 100,
+         # 2) calculate area per plant
+         area_plant = (use_plot_length*use_plot_width)/obs_planted_number_plot,
+         # 3) calculate the yield_v4 obs_planted_number_plot
+         obs_yield_ha = ifelse(obs_yield_ha == 0, NA, obs_yield_ha),
+         obs_starch_content = ifelse(obs_starch_content == 0, NA, obs_starch_content),
+         obs_yield_ha_v2 = (((obs_root_weight_plot*10000)/(area_plant*obs_harvest_number_plan))/1000),
+         obs_starch_yield_ha = obs_starch_content * obs_yield_ha_v2 / 100)
+
+library(plotly)
+
+p1 <- trial_standard %>% ggplot() +
+  geom_point(aes(x = obs_yield_ha, y = obs_yield_ha_v2, color = use_plot_number), show.legend = F) +
+  facet_wrap(~use_trial_name) +
+  theme_xiaofei()
+
+ggplotly(p1)
+detach("package:plotly", unload = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
