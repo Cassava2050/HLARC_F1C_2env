@@ -8,13 +8,17 @@ output:
     toc_float: true
     code_download: true
     theme: paper
-    df_print: tibble
     code_folding: show
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-fig.dim = c(7, 4)
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+fig.dim = c(10, 5)
 library(ggrepel)
 ```
 
@@ -58,20 +62,14 @@ obs_col <- c(
 sel_data_kp <- sel_data_kp %>% 
   mutate(across(all_of(obs_col), as.numeric))
 
-
 # remove - , replace by _
 names(sel_data_kp) = gsub("-", "_", names(sel_data_kp))
-
-# remove trials: 202301, 202304, 202307. These were analyzed 
-sel_data_kp <- 
-  sel_data_kp %>% filter(!str_detect(use_trial_name, "202301|202304|202307"))
-
 
 # Duplications in row and cols
 duplicated_plot <- row_col_dup(sel_data_kp)
 ```
 # Plot trial layout
-```{r}
+```{r echo=FALSE}
 trial_layout(sel_data_kp)
 ```
 
@@ -123,24 +121,24 @@ static_map <- ggplot() +
 # Display the map
 print(static_map)
 
-ggsave(paste("images\\map", trial_interest, ".png", sep = "_"),
-       plot = static_map, units = "in", dpi = 300, width = 6, height = 5
-)
+# ggsave(paste("images\\map", trial_interest, ".png", sep = "_"),
+#        plot = static_map, units = "in", dpi = 300, width = 6, height = 5
+# )
 
 ```
 # Extracting checks
 
-```{r max.print=1}
+```{r include=FALSE}
 accession_rep_ct <- trial_standard %>%
   count(use_trial_name, use_accession_name, use_rep_number)  %>%
-  arrange(use_trial_name) %>%
-  filter(n>1)
-print(accession_rep_ct) 
+  arrange(use_trial_name) 
+  # filter(n>1)
+print(accession_rep_ct)
 ```
 
 # Harvesting time
 
-```{r max.print=1}
+```{r message=FALSE, warning=FALSE}
 conducted_trials <- 
   trial_standard %>% group_by(use_trial_name, use_plant_date,use_harvest_date, use_location) %>% 
   summarise(n_gen = n_distinct(use_accession_name)) %>% 
@@ -153,7 +151,7 @@ print(conducted_trials %>% rmarkdown::paged_table())
 ```
 # plot plant number
 
-```{r max.print=1}
+```{r}
 plants_plot <- trial_standard %>%
   group_by(use_trial_name) %>%
   count(obs_planted_number_plot) 
@@ -167,10 +165,14 @@ plants_harvested <- trial_standard %>%
   group_by(use_trial_name) %>%
   count(obs_harvest_number) %>% arrange(desc(obs_harvest_number))
 
+plants_plot %>% select(-n) %>% 
+  left_join(plants_harvested %>% 
+              summarise(harvested_plants = max(obs_harvest_number, na.rm = TRUE)), by = "use_trial_name")
+
 # planted and harvested
 plants_plot %>% select(-n) %>% 
   left_join(plants_harvested %>% 
-              summarise(harvested_plants = max(obs_harvest_number)), by = "use_trial_name") %>% 
+              summarise(harvested_plants = max(obs_harvest_number, na.rm = TRUE)), by = "use_trial_name") %>% 
   write.table("clipboard", sep="\t", col.names = T, row.names = F)
 ```
 
@@ -191,8 +193,8 @@ plants_to_harvest <- plants_harvested %>%
 
 print(plants_to_harvest)
 
-ggsave(paste("images\\bar", trial_interest, ".png", sep = "_"),
-       plot = plants_to_harvest, units = "in", dpi = 300, width = 9, height = 6)
+# ggsave(paste("images\\bar", trial_interest, ".png", sep = "_"),
+#        plot = plants_to_harvest, units = "in", dpi = 300, width = 9, height = 6)
 ```
 
 # Compute germination, yield, yield_starch
@@ -222,6 +224,81 @@ p1 <- trial_standard %>% ggplot() +
 
 ggplotly(p1)
 detach("package:plotly", unload = TRUE)
+```
+
+## Is numeric all traits?
+
+```{r}
+## Is numeric all traits?
+is_numeric(trial_data = trial_standard)
+
+# Get the tidy data
+meta_info = names(trial_standard )[str_detect(names(trial_standard), "use_")]
+meta_info = gsub("use_", "", meta_info)
+meta_info
+trial_tidy = trial_standard
+names(trial_tidy)= gsub("use_", "", names(trial_standard))
+
+# observations
+trait_list = names(trial_tidy)[str_detect(names(trial_tidy), "obs_")]
+trait_list = gsub("obs_", "", trait_list)
+trait_list
+names(trial_tidy)= gsub("obs_", "", names(trial_tidy))
+trial_tidy = trial_tidy[c(meta_info, trait_list)]
+```
+
+# Boxplots
+
+```{r}
+# Boxplots and save in output folder
+dev.off()
+boxplot_traits(my_dat = trial_tidy,
+               trait_wanted = trait_list,
+               folder = paste0(here::here("output"), "/"), 
+               trial_interest)
+
+
+# Grouping boxplot
+trait_wanted <- trait_list
+plot_bxp <- trial_tidy %>%
+  pivot_longer(
+    cols = all_of(trait_wanted),
+    names_to = "var",
+    values_to = "values"
+  ) %>%
+  filter(!var %in% c(
+    "stake_plant", "planted_number_plot",
+    "harvest_number", "root_weight_air",
+    "root_weight_water", "harvest_number_plan",
+    "root_rot_perc", "yield_ha_v2"
+  )) %>%
+  ggplot(aes(x = trial_name, y = values)) +
+  facet_wrap(~var,
+             ncol = 5, scales = "free_y"
+  ) + 
+  geom_violin(fill = "gray") +
+  geom_boxplot(width = 0.2) +
+  labs(x = NULL, y = NULL, title = "") +
+  theme_xiaofei() +
+  theme(
+    axis.text.x = element_text(size = 8, vjust = 1, angle = 65),
+    axis.text.y = element_text(size = 8),
+    plot.title = element_text(color = "black"),
+    strip.text.x = element_text(
+      size = 8, face = "bold.italic")
+  ) 
+
+print(plot_bxp)
+
+ggsave(paste0("images\\boxplot_", trial_interest, ".png"),
+       plot = plot_bxp, units = "in", dpi = 300, width = 16, height = 12
+)
+```
+# Save the tidy data for analysis
+
+```{r}
+write.csv(trial_tidy, here::here("output", paste("01_", year_interest, trial_interest,
+                                                   "_tidy_data4analysis_", ".csv", sep = "")), row.names = FALSE)
 ```
 
 
